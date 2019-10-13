@@ -17,6 +17,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -138,13 +140,12 @@ func obtainCert(ctx context.Context, domain string) (cert, key string, err error
 	req := &x509.CertificateRequest{
 		Subject: pkix.Name{CommonName: domain},
 	}
-	req.DNSNames = []string{domain}
 	csr, err := x509.CreateCertificateRequest(rand.Reader, req, certKey)
 	if err != nil {
 		return "", "", fmt.Errorf("csr: %v", err)
 	}
 
-	accountKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	accountKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return "", "", fmt.Errorf("account key: %v", err)
 	}
@@ -156,15 +157,15 @@ func obtainCert(ctx context.Context, domain string) (cert, key string, err error
 		return "", "", fmt.Errorf("register: %v", err)
 	}
 
-	if err := authorize(ctx, client, domain); err != nil {
+	order, err := authorize(ctx, client, domain)
+	if err != nil {
 		return "", "", err
 	}
 
-	const expiry = 90 * 24 * time.Hour // 90 days, desired
 	const bundle = true
-	certDER, _, err := client.CreateCert(ctx, csr, expiry, bundle)
+	certDER, _, err := client.CreateOrderCert(ctx, order.FinalizeURL, csr, bundle)
 	if err != nil {
-		return "", "", fmt.Errorf("create cert: %v", err)
+		return "", "", fmt.Errorf("create order cert: %v", err)
 	}
 
 	var certPEM []byte
@@ -180,42 +181,60 @@ func obtainCert(ctx context.Context, domain string) (cert, key string, err error
 
 // authorize authorizes the client to issue certificates for this domain
 // by going through the http-01 challenge.
-func authorize(ctx context.Context, client *acme.Client, domain string) error {
-	authorization, err := client.Authorize(ctx, domain)
+func authorize(ctx context.Context, client *acme.Client, domain string) (*acme.Order, error) {
+	order, err := client.AuthorizeOrder(ctx, acme.DomainIDs(domain))
 	if err != nil {
-		return fmt.Errorf("authorize: %v", err)
+		return nil, fmt.Errorf("authorize order: %v", err)
 	}
-	if authorization.Status == acme.StatusValid {
-		return nil
+	if order.Status == acme.StatusReady {
+		return order, nil
+	}
+	if order.Status != acme.StatusPending {
+		return nil, fmt.Errorf("authorize order: unexpected status %v, order URL %v", order.Status, order.URI)
 	}
 
-	var challenge *acme.Challenge
-	for _, c := range authorization.Challenges {
-		if c.Type == "http-01" {
-			challenge = c
-			break
+	for _, authzURL := range order.AuthzURLs {
+		authorization, err := client.GetAuthorization(ctx, authzURL)
+		if err != nil {
+			return nil, fmt.Errorf("get authorization: %v", err)
+		}
+		if authorization.Status != acme.StatusPending {
+			continue
+		}
+
+		var challenge *acme.Challenge
+		for _, c := range authorization.Challenges {
+			if c.Type == "http-01" {
+				challenge = c
+				break
+			}
+		}
+		if challenge == nil {
+			return nil, fmt.Errorf("no http-01 challenge offered")
+		}
+
+		response, err := client.HTTP01ChallengeResponse(challenge.Token)
+		if err != nil {
+			return nil, fmt.Errorf("challenge response: %v", err)
+		}
+
+		challengeFile := filepath.Join(*acmeDir, challenge.Token)
+		if err := ioutil.WriteFile(challengeFile, []byte(response), 0644); err != nil {
+			return nil, fmt.Errorf("could not write challenge: %v", err)
+		}
+		defer os.Remove(challengeFile)
+
+		if _, err := client.Accept(ctx, challenge); err != nil {
+			return nil, fmt.Errorf("accept challenge: %v", err)
+		}
+		if _, err = client.WaitAuthorization(ctx, authorization.URI); err != nil {
+			return nil, fmt.Errorf("authorization: %v", err)
 		}
 	}
-	if challenge == nil {
-		return fmt.Errorf("no http-01 challenge offered")
-	}
 
-	response, err := client.HTTP01ChallengeResponse(challenge.Token)
+	order, err = client.WaitOrder(ctx, order.URI)
 	if err != nil {
-		return fmt.Errorf("challenge response: %v", err)
+		return nil, fmt.Errorf("wait order: %v", err)
 	}
-
-	challengeFile := filepath.Join(*acmeDir, challenge.Token)
-	if err := ioutil.WriteFile(challengeFile, []byte(response), 0644); err != nil {
-		return fmt.Errorf("could not write challenge: %v", err)
-	}
-	defer os.Remove(challengeFile)
-
-	if _, err := client.Accept(ctx, challenge); err != nil {
-		return fmt.Errorf("accept challenge: %v", err)
-	}
-	if _, err = client.WaitAuthorization(ctx, authorization.URI); err != nil {
-		return fmt.Errorf("authorization: %v", err)
-	}
-	return nil
+	return order, nil
 }
