@@ -15,6 +15,6 @@ A temporary account key is created as needed and not saved.
 
 Bugs, comments, questions: create a [new issue][3].
 
-[1]: https://api.travis-ci.org/StalkR/letsencrypt.png?branch=master
-[2]: https://travis-ci.org/StalkR/letsencrypt
+[1]: https://github.com/StalkR/letsencrypt/actions/workflows/build.yml/badge.svg
+[2]: https://github.com/StalkR/letsencrypt/actions/workflows/build.yml
 [3]: https://github.com/StalkR/letsencrypt/issues/new
