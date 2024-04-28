@@ -15,10 +15,10 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -53,7 +53,7 @@ func main() {
 
 	for _, domain := range strings.Split(*domains, ",") {
 		if err := manage(ctx, domain); err != nil {
-			log.Fatal(err)
+			log.Print(err)
 		}
 	}
 }
